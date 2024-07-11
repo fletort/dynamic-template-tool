@@ -1,0 +1,83 @@
+name: Init Repository and Resolve Dynamic Template
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: 'Repository Name to init'
+        required: true
+        type: string
+      template:
+        description: 'Template to use to init the repository (optional if repo is already created)'
+        type: choice
+        default: no_init
+        options:
+          - no_init
+          - template-common-js
+
+jobs:
+  init_repo:
+    name: Init Repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+
+      - name: Create the repository from the template
+        if:  ${{ inputs.template != 'no_init' }}
+        run: |
+          gh repo create ${{ inputs.repo }} --public --template ${{ inputs.template }}
+        env:
+          GH_TOKEN: ${{ secrets.PAT_DYNAMIC_TEMPLATE }}
+
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.actor }}/${{ inputs.repo }}
+          token: ${{ secrets.PAT_DYNAMIC_TEMPLATE }}
+
+      - name: "Manage connection to internal ${{ vars.ci_report_repo_path }} repo"
+        id: report_repo_cnx
+        uses: fletort/generate-ssh-deploy-repo-action@v1
+        with:
+          client_repo: ${{ github.actor }}/${{ inputs.repo }}
+          deploy_repo: ${{ vars.ci_report_repo_path }}
+          token: ${{ secrets.PAT_DYNAMIC_TEMPLATE }}
+
+      - name: "TestSpace Project Creation"
+        id: testspace_creation
+        uses: fletort/testspace-create-action@v1
+        with:
+          token: ${{ secrets.TESTSPACE_TOKEN }}
+          repository: ${{ github.actor }}/${{ inputs.repo }}
+
+      - name: Create develop Branch
+        # need write permission on the token (not the case by default on organization)
+        run: |
+          git checkout -b develop
+          git push origin develop
+
+      - name: Define Branch Protection
+        run: |
+          gh api "repos/${{ github.actor }}/${{ inputs.repo }}/branches/main/protection" --method PUT --input ./.github/workflows/init/branch_protection.json
+          gh api "repos/${{ github.actor }}/${{ inputs.repo }}/branches/develop/protection" --method PUT --input ./.github/workflows/init/branch_protection.json
+        env:
+          GH_TOKEN: ${{ secrets.PAT_DYNAMIC_TEMPLATE }}
+
+      - name: "Manage Dynamic Template"
+        id: template
+        env:
+          TESTSPACE_SPACE_ID: ${{ steps.testspace_creation.outputs.id }}
+          CI_REPORT_REPO_PATH: ${{ vars.ci_report_repo_path }}
+        uses: fletort/jinja2-template-action@v1
+
+      - name: Create Pull Request for Template Resolution
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: 'Dynamic Template Resolution [skip ci]'
+          branch: 'template_resolution'
+          base: 'develop'
+          title: 'Dynamic Template Resolution'
+          body: 'Jinja2 Template Resolution made by jinja2-template-action'
+          token: ${{ secrets.PAT_DYNAMIC_TEMPLATE }}
+
